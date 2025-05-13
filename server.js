@@ -58,12 +58,62 @@ const store = {
 const initCustomOrder = () => {
   if (!store.customOrder) {
     console.log('Инициализация customOrder...');
-    store.customOrder = store.items.slice(0, 1000).map(item => item.id);
+    store.customOrder = store.items.slice(0, 10000).map(item => item.id);
     console.log(`customOrder инициализирован, длина: ${store.customOrder.length}`);
   }
 };
 
-initCustomOrder();
+const extendCustomOrder = (maxNeededId) => {
+  if (!store.customOrder || !Array.isArray(store.customOrder)) {
+    initCustomOrder();
+    return true;
+  }
+  
+  if (store.customOrder.includes(maxNeededId)) {
+    console.log(`Элемент ${maxNeededId} уже есть в customOrder`);
+    return false;
+  }
+  
+  let currentMaxId = 0;
+  for (const id of store.customOrder) {
+    if (id > currentMaxId) {
+      currentMaxId = id;
+    }
+  }
+  
+  if (maxNeededId <= currentMaxId) {
+    return false;
+  }
+  
+  console.log(`Расширяем customOrder с ${currentMaxId} до ${maxNeededId}`);
+  
+  const chunkSize = 5000;
+  let startId = currentMaxId + 1;
+  
+  while (startId <= maxNeededId) {
+    const endId = Math.min(startId + chunkSize - 1, maxNeededId);
+    
+    const chunkItems = [];
+    for (const item of store.items) {
+      if (item.id >= startId && item.id <= endId) {
+        chunkItems.push(item.id);
+      }
+      
+      if (item.id > endId) {
+        break;
+      }
+    }
+    
+    console.log(`Добавляем ${chunkItems.length} элементов в customOrder (${startId} - ${endId})`);
+    
+    store.customOrder = [...store.customOrder, ...chunkItems];
+    
+    startId = endId + 1;
+  }
+  
+  console.log(`customOrder расширен до ${maxNeededId}, новая длина: ${store.customOrder.length}`);
+  return true;
+};
 
 app.get('/api/items', (req, res) => {
   console.log('Получение элементов с параметрами:', req.query);
@@ -71,6 +121,7 @@ app.get('/api/items', (req, res) => {
   const page = parseInt(req.query.page) || 1;
   const limit = parseInt(req.query.limit) || 20;
   const search = req.query.search || '';
+  const noReorder = req.query.noReorder === 'true';
 
   if (!store.customOrder || !Array.isArray(store.customOrder) || store.customOrder.length === 0) {
     console.log('customOrder не инициализирован или пуст, выполняем инициализацию');
@@ -91,10 +142,10 @@ app.get('/api/items', (req, res) => {
   
   let orderedSearchResults = [];
   
-  const visibleItems = page * limit * 2;
+  const visibleItems = noReorder ? page * limit : page * limit * 2;
   
-  const relevantCustomOrder = search 
-    ? store.customOrder 
+  const relevantCustomOrder = search || noReorder
+    ? store.customOrder
     : store.customOrder.slice(0, Math.min(store.customOrder.length, visibleItems + 1000));
   
   console.log(`Используем ${relevantCustomOrder.length} элементов из customOrder`);
@@ -153,7 +204,8 @@ app.get('/api/items', (req, res) => {
     totalItems: orderedSearchResults.length,
     currentPage: page,
     totalPages: Math.ceil(orderedSearchResults.length / limit),
-    hasMore: endIndex < orderedSearchResults.length
+    hasMore: endIndex < orderedSearchResults.length,
+    serverTimestamp: Date.now()
   });
 });
 
@@ -169,64 +221,138 @@ app.post('/api/selection', (req, res) => {
 });
 
 app.post('/api/order', (req, res) => {
-  const { order, fromId, toId } = req.body;
-  console.log('Запрос на сохранение порядка:', { 
-    orderLength: order?.length,
-    fromId,
-    toId
-  });
-  
-  if (fromId && toId) {
-    initCustomOrder();
+  try {
+    const { order, fromId, toId } = req.body;
+    console.log('Запрос на сохранение порядка:', { 
+      orderLength: order?.length,
+      fromId,
+      toId
+    });
     
-    const fromIndex = store.customOrder.indexOf(fromId);
-    const toIndex = store.customOrder.indexOf(toId);
-    
-    console.log(`Перемещение элемента: ${fromId}(индекс ${fromIndex}) -> ${toId}(индекс ${toIndex})`);
-    
-    if (fromIndex !== -1 && toIndex !== -1) {
-      store.customOrder.splice(fromIndex, 1);
-      
-      const newIndex = fromIndex < toIndex ? toIndex : toIndex;
-      
-      store.customOrder.splice(newIndex, 0, fromId);
-      
-      console.log(`Элемент ${fromId} перемещен на позицию ${newIndex}`);
-      res.json({ success: true });
-    } else {
-      console.log('Ошибка: элементы не найдены в customOrder');
-      res.status(400).json({ error: 'Элементы не найдены в customOrder' });
-    }
-  }
-  else if (Array.isArray(order) && order.length > 0) {
-    console.log(`Сохраняем полный порядок длиной ${order.length}`);
-    
-    const newOrder = [...order];
-    
-    if (!store.customOrder || !Array.isArray(store.customOrder)) {
+    if (fromId && toId) {
       initCustomOrder();
-    }
-    
-    const orderSet = new Set(newOrder);
-    for (const id of store.customOrder) {
-      if (!orderSet.has(id)) {
-        newOrder.push(id);
+      
+      const fromItem = store.items.find(item => item.id === fromId);
+      const toItem = store.items.find(item => item.id === toId);
+      
+      if (!fromItem || !toItem) {
+        console.log('Ошибка: элементы не найдены в store.items');
+        return res.status(400).json({ error: 'Некоторые элементы не найдены' });
+      }
+      
+      try {
+        const maxNeededId = Math.max(fromId, toId);
+        console.log(`Расширяем customOrder до ${maxNeededId}`);
+        const extended = extendCustomOrder(maxNeededId);
+        console.log(`Результат расширения: ${extended ? 'расширен' : 'расширение не требуется'}`);
+      } catch (error) {
+        console.error('Ошибка при расширении customOrder:', error);
+        return res.status(500).json({ error: 'Ошибка при обработке запроса: ' + error.message });
+      }
+      
+      const fromIndex = store.customOrder.indexOf(fromId);
+      const toIndex = store.customOrder.indexOf(toId);
+      
+      console.log(`Перемещение элемента: ${fromId}(индекс ${fromIndex}) -> ${toId}(индекс ${toIndex})`);
+      
+      if (fromIndex !== -1 && toIndex !== -1) {
+        store.customOrder.splice(fromIndex, 1);
+        
+        let newToIndex;
+        
+        if (fromIndex < toIndex) {
+          newToIndex = store.customOrder.indexOf(toId) + 1;
+        } else {
+          newToIndex = store.customOrder.indexOf(toId);
+        }
+        
+        if (newToIndex === -1) {
+          console.log(`Предупреждение: не найден toId=${toId} в customOrder после удаления. Используем резервную логику.`);
+          for (let i = 1; i <= 10; i++) {
+            const idxForward = store.customOrder.indexOf(toId + i);
+            if (idxForward !== -1) {
+              newToIndex = idxForward;
+              console.log(`Найден альтернативный элемент ${toId + i} на позиции ${newToIndex}`);
+              break;
+            }
+            
+            const idxBackward = store.customOrder.indexOf(toId - i);
+            if (idxBackward !== -1) {
+              newToIndex = idxBackward;
+              console.log(`Найден альтернативный элемент ${toId - i} на позиции ${newToIndex}`);
+              break;
+            }
+          }
+          
+          if (newToIndex === -1) {
+            newToIndex = 0;
+            console.log(`Не удалось найти альтернативу. Используем позицию 0.`);
+          }
+        }
+        
+        store.customOrder.splice(newToIndex, 0, fromId);
+        
+        console.log(`Элемент ${fromId} перемещен на позицию ${newToIndex} (относительно ${toId})`);
+        res.json({ success: true });
+      } else {
+        console.log('Ошибка: элементы не найдены в customOrder после расширения');
+        return res.status(400).json({ 
+          error: 'Не удалось найти элементы в customOrder',
+          fromIndex,
+          toIndex,
+          customOrderLength: store.customOrder.length
+        });
       }
     }
-    
-    store.customOrder = newOrder;
-    console.log(`Новый customOrder сохранен, длина: ${store.customOrder.length}`);
-    res.json({ success: true });
-  } else {
-    console.log('Ошибка: неверный формат данных запроса');
-    res.status(400).json({ error: 'Неверный формат данных' });
+    else if (Array.isArray(order) && order.length > 0) {
+      console.log(`Сохраняем полный порядок длиной ${order.length}`);
+      
+      const newOrder = [...order];
+      
+      if (!store.customOrder || !Array.isArray(store.customOrder)) {
+        initCustomOrder();
+      }
+      
+      try {
+        if (order.length > 0) {
+          const maxOrderId = Math.max(...order);
+          if (maxOrderId > 0) {
+            console.log(`Расширяем customOrder до ${maxOrderId}`);
+            extendCustomOrder(maxOrderId);
+          }
+        }
+      } catch (error) {
+        console.error('Ошибка при расширении customOrder:', error);
+      }
+      
+      const orderSet = new Set(newOrder);
+      for (const id of store.customOrder) {
+        if (!orderSet.has(id)) {
+          newOrder.push(id);
+        }
+      }
+      
+      store.customOrder = newOrder;
+      console.log(`Новый customOrder сохранен, длина: ${store.customOrder.length}`);
+      res.json({ success: true });
+    } else {
+      console.log('Ошибка: неверный формат данных запроса');
+      res.status(400).json({ error: 'Неверный формат данных' });
+    }
+  } catch (error) {
+    console.error('Ошибка при обработке запроса /api/order:', error);
+    res.status(500).json({ error: 'Внутренняя ошибка сервера: ' + error.message });
   }
 });
 
 app.get('/api/settings', (req, res) => {
   console.log(`Запрос настроек: ${store.selectedIds.size} выбранных элементов, customOrder: ${store.customOrder ? 'инициализирован' : 'не инициализирован'}`);
   
-  const limitedCustomOrder = store.customOrder ? store.customOrder.slice(0, 1000) : null;
+  const limitedCustomOrder = store.customOrder 
+    ? store.customOrder.slice(0, 5000) 
+    : null;
+  
+  console.log(`Отправляем ${limitedCustomOrder ? limitedCustomOrder.length : 0} элементов customOrder`);
   
   res.json({
     selectedIds: Array.from(store.selectedIds),
